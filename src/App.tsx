@@ -29,6 +29,12 @@ function App() {
     setSelections((prev) => prev.filter((s) => s.id !== id));
   }, []);
 
+  const handleSelectionUpdate = useCallback((updated: PdfSelection) => {
+    setSelections((prev) =>
+      prev.map((s) => (s.id === updated.id ? updated : s))
+    );
+  }, []);
+
   const handleClearAll = useCallback(() => {
     setSelections([]);
   }, []);
@@ -79,6 +85,7 @@ function App() {
               scale={scale}
               selections={selections}
               onSelectionCreate={handleSelectionCreate}
+              onSelectionUpdate={handleSelectionUpdate}
             />
           ) : (
             <div style={styles.placeholder}>
