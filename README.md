@@ -2,6 +2,10 @@
 
 PDF上で矩形ドラッグ選択を行い、PDFページ座標（points）で矩形データを取得するReactアプリケーション。
 
+## デモ
+
+<https://martians-sheep.github.io/pdf-region-selector-view/>
+
 ## 機能
 
 - **PDF表示**: ファイル選択でPDFを表示
