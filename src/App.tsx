@@ -1,7 +1,13 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { pdfjs } from 'react-pdf';
 import PdfViewer from './components/PdfViewer';
 import SelectionList from './components/SelectionList';
+import PageNavigation from './components/PageNavigation';
+import LayoutDetectButton from './components/LayoutDetectButton';
+import DetectionList from './components/DetectionList';
+import { useLayoutDetection } from './hooks/useLayoutDetection';
+import { getPdfPageCount } from './utils/pdfToImage';
+import { createBoundingBoxFromDetections } from './utils/boundingBox';
 import type { PdfSelection } from './types';
 
 // PDF.js worker setup
@@ -11,15 +17,35 @@ function App() {
   const [pdfUrl, setPdfUrl] = useState<string>('');
   const [selections, setSelections] = useState<PdfSelection[]>([]);
   const [scale, setScale] = useState<number>(1.0);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [totalPages, setTotalPages] = useState<number>(1);
+  const [scoreThreshold, setScoreThreshold] = useState<number>(0.5);
+  const [showDetections, setShowDetections] = useState<boolean>(true);
+  const [activeTab, setActiveTab] = useState<'selections' | 'detections'>('selections');
+  const [autoCreateBoundingBox, setAutoCreateBoundingBox] = useState<boolean>(true);
+  const autoCreatedPagesRef = useRef<Set<number>>(new Set());
 
-  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const { detections, progress, startDetection, clearDetections, isProcessing } =
+    useLayoutDetection();
+
+  const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file && file.type === 'application/pdf') {
       const url = URL.createObjectURL(file);
       setPdfUrl(url);
       setSelections([]);
+      setCurrentPage(1);
+      clearDetections();
+      autoCreatedPagesRef.current = new Set();
+
+      try {
+        const pages = await getPdfPageCount(url);
+        setTotalPages(pages);
+      } catch {
+        setTotalPages(1);
+      }
     }
-  }, []);
+  }, [clearDetections]);
 
   const handleSelectionCreate = useCallback((selection: PdfSelection) => {
     setSelections((prev) => [...prev, selection]);
@@ -51,6 +77,53 @@ function App() {
     setScale(1.0);
   }, []);
 
+  const handleDetectLayout = useCallback(async () => {
+    if (!pdfUrl) return;
+    autoCreatedPagesRef.current = new Set();
+    await startDetection(pdfUrl);
+  }, [pdfUrl, startDetection]);
+
+  const handlePageChange = useCallback((page: number) => {
+    setCurrentPage(page);
+  }, []);
+
+  const handleCreateBoundingBox = useCallback(() => {
+    const pageDetections = detections.filter(
+      (d) => d.pageNumber === currentPage && d.score >= scoreThreshold
+    );
+    const boundingBox = createBoundingBoxFromDetections(pageDetections, currentPage);
+    if (boundingBox) {
+      setSelections((prev) => [...prev, boundingBox]);
+    }
+  }, [detections, currentPage, scoreThreshold]);
+
+  // Auto-create bounding box when page detection completes
+  useEffect(() => {
+    if (!autoCreateBoundingBox || progress.status !== 'processing') {
+      return;
+    }
+
+    const processedPage = progress.processedPages;
+    if (processedPage === 0 || autoCreatedPagesRef.current.has(processedPage)) {
+      return;
+    }
+
+    const pageDetections = detections.filter(
+      (d) => d.pageNumber === processedPage && d.score >= scoreThreshold
+    );
+
+    if (pageDetections.length > 0) {
+      const boundingBox = createBoundingBoxFromDetections(pageDetections, processedPage);
+      if (boundingBox) {
+        setSelections((prev) => [...prev, boundingBox]);
+        autoCreatedPagesRef.current.add(processedPage);
+      }
+    }
+  }, [autoCreateBoundingBox, progress.processedPages, progress.status, detections, scoreThreshold]);
+
+  const currentPageDetections = detections.filter((d) => d.pageNumber === currentPage);
+  const currentPageSelections = selections.filter((s) => s.pageNumber === currentPage);
+
   return (
     <div style={styles.container}>
       <header style={styles.header}>
@@ -62,6 +135,15 @@ function App() {
             onChange={handleFileChange}
             style={styles.fileInput}
           />
+
+          {pdfUrl && totalPages > 1 && (
+            <PageNavigation
+              currentPage={currentPage}
+              totalPages={totalPages}
+              onPageChange={handlePageChange}
+            />
+          )}
+
           <div style={styles.zoomControls}>
             <button onClick={handleZoomOut} style={styles.button}>
               - Zoom Out
@@ -74,6 +156,45 @@ function App() {
               Reset
             </button>
           </div>
+
+          {pdfUrl && (
+            <>
+              <LayoutDetectButton
+                onDetect={handleDetectLayout}
+                onClear={clearDetections}
+                progress={progress}
+                disabled={!pdfUrl || isProcessing}
+              />
+              <label style={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={autoCreateBoundingBox}
+                  onChange={(e) => setAutoCreateBoundingBox(e.target.checked)}
+                />
+                自動で本文領域作成
+              </label>
+            </>
+          )}
+
+          {detections.length > 0 && (
+            <>
+              <label style={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={showDetections}
+                  onChange={(e) => setShowDetections(e.target.checked)}
+                />
+                Show Detections
+              </label>
+              <button
+                onClick={handleCreateBoundingBox}
+                style={styles.boundingBoxButton}
+                disabled={currentPageDetections.length === 0}
+              >
+                本文領域を作成
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -83,7 +204,10 @@ function App() {
             <PdfViewer
               url={pdfUrl}
               scale={scale}
-              selections={selections}
+              selections={currentPageSelections}
+              detections={showDetections ? currentPageDetections : []}
+              currentPage={currentPage}
+              scoreThreshold={scoreThreshold}
               onSelectionCreate={handleSelectionCreate}
               onSelectionUpdate={handleSelectionUpdate}
             />
@@ -95,11 +219,41 @@ function App() {
         </div>
 
         <aside style={styles.sidebar}>
-          <SelectionList
-            selections={selections}
-            onDelete={handleDeleteSelection}
-            onClearAll={handleClearAll}
-          />
+          <div style={styles.tabs}>
+            <button
+              onClick={() => setActiveTab('selections')}
+              style={{
+                ...styles.tab,
+                ...(activeTab === 'selections' ? styles.activeTab : {}),
+              }}
+            >
+              選択領域
+            </button>
+            <button
+              onClick={() => setActiveTab('detections')}
+              style={{
+                ...styles.tab,
+                ...(activeTab === 'detections' ? styles.activeTab : {}),
+              }}
+            >
+              検出結果
+            </button>
+          </div>
+
+          {activeTab === 'selections' ? (
+            <SelectionList
+              selections={selections}
+              onDelete={handleDeleteSelection}
+              onClearAll={handleClearAll}
+            />
+          ) : (
+            <DetectionList
+              detections={detections}
+              currentPage={currentPage}
+              scoreThreshold={scoreThreshold}
+              onScoreThresholdChange={setScoreThreshold}
+            />
+          )}
         </aside>
       </main>
     </div>
@@ -147,6 +301,22 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'center',
     fontWeight: 'bold',
   },
+  checkboxLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    fontSize: '14px',
+    cursor: 'pointer',
+  },
+  boundingBoxButton: {
+    padding: '8px 16px',
+    background: '#FF9800',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '14px',
+  },
   main: {
     flex: 1,
     display: 'flex',
@@ -175,6 +345,25 @@ const styles: Record<string, React.CSSProperties> = {
     width: '400px',
     flexShrink: 0,
     overflow: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  tabs: {
+    display: 'flex',
+    marginBottom: '8px',
+  },
+  tab: {
+    flex: 1,
+    padding: '8px 16px',
+    border: '1px solid #ccc',
+    background: '#f5f5f5',
+    cursor: 'pointer',
+    fontSize: '14px',
+  },
+  activeTab: {
+    background: '#fff',
+    borderBottom: '1px solid #fff',
+    fontWeight: 'bold',
   },
 };
 

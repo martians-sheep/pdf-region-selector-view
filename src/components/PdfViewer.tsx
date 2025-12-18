@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import { Document, Page } from 'react-pdf';
 import type { PDFPageProxy } from 'pdfjs-dist';
-import type { PdfSelection, DomRect } from '../types';
+import type { PdfSelection, PdfDetection, DomRect } from '../types';
+import DetectionOverlay from './DetectionOverlay';
 
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -10,6 +11,9 @@ type Props = {
   url: string;
   scale: number;
   selections: PdfSelection[];
+  detections?: PdfDetection[];
+  currentPage?: number;
+  scoreThreshold?: number;
   onSelectionCreate: (selection: PdfSelection) => void;
   onSelectionUpdate: (selection: PdfSelection) => void;
 };
@@ -28,7 +32,16 @@ type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 const MIN_SELECTION_SIZE = 3; // px
 const HANDLE_SIZE = 8; // px
 
-export default function PdfViewer({ url, scale, selections, onSelectionCreate, onSelectionUpdate }: Props) {
+export default function PdfViewer({
+  url,
+  scale,
+  selections,
+  detections = [],
+  currentPage = 1,
+  scoreThreshold = 0,
+  onSelectionCreate,
+  onSelectionUpdate,
+}: Props) {
   const [pageProxy, setPageProxy] = useState<PDFPageProxy | null>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('none');
@@ -306,7 +319,7 @@ export default function PdfViewer({ url, scale, selections, onSelectionCreate, o
         // Create selection
         const selection: PdfSelection = {
           id: crypto.randomUUID(),
-          pageNumber: 1,
+          pageNumber: currentPage,
           x: pdfCoords.x,
           y: pdfCoords.y,
           width: pdfCoords.width,
@@ -599,7 +612,7 @@ export default function PdfViewer({ url, scale, selections, onSelectionCreate, o
     <Document file={url} loading={<div>Loading PDF...</div>}>
       <div style={styles.wrapper}>
         <Page
-          pageNumber={1}
+          pageNumber={currentPage}
           scale={scale}
           onLoadSuccess={handlePageLoadSuccess}
           renderTextLayer={false}
@@ -614,6 +627,14 @@ export default function PdfViewer({ url, scale, selections, onSelectionCreate, o
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerCancel}
         >
+          {/* Detection results */}
+          <DetectionOverlay
+            detections={detections}
+            viewport={viewport}
+            showLabels={true}
+            scoreThreshold={scoreThreshold}
+          />
+
           {/* Existing selections */}
           {selections.map((sel) => {
             const domRect = getDisplayRect(sel);
